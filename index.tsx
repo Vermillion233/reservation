@@ -56,9 +56,9 @@ const App = () => {
   // 로컬 스토리지 로드
   useEffect(() => {
     try {
-      const savedApps = localStorage.getItem('app_bookings_v5');
-      const savedSlots = localStorage.getItem('app_custom_slots_v5'); 
-      const savedCloudId = localStorage.getItem('app_cloud_id_v5');
+      const savedApps = localStorage.getItem('app_bookings_v6');
+      const savedSlots = localStorage.getItem('app_custom_slots_v6'); 
+      const savedCloudId = localStorage.getItem('app_cloud_id_v6');
       if (savedApps) setApps(JSON.parse(savedApps));
       if (savedSlots) setCustomSlots(JSON.parse(savedSlots));
       if (savedCloudId) setCloudId(savedCloudId);
@@ -69,9 +69,9 @@ const App = () => {
 
   // 로컬 스토리지 저장
   useEffect(() => {
-    localStorage.setItem('app_bookings_v5', JSON.stringify(apps));
-    localStorage.setItem('app_custom_slots_v5', JSON.stringify(customSlots));
-    localStorage.setItem('app_cloud_id_v5', cloudId);
+    localStorage.setItem('app_bookings_v6', JSON.stringify(apps));
+    localStorage.setItem('app_custom_slots_v6', JSON.stringify(customSlots));
+    localStorage.setItem('app_cloud_id_v6', cloudId);
   }, [apps, customSlots, cloudId]);
 
   // 잔여석 계산
@@ -137,7 +137,6 @@ const App = () => {
         setCustomSlots(data.slots || {});
         alert('다운로드 완료!');
       } else {
-        // 스마트 병합
         const cloudData = await fetchCloudData(cloudId);
         const cloudApps: Application[] = cloudData.apps || [];
         const cloudSlots: Record<string, number> = cloudData.slots || {};
@@ -180,8 +179,6 @@ const App = () => {
     setSelectedDate(null);
     setView('home');
   };
-
-  // --- 렌더링 파트 ---
 
   const renderCalendar = (mode: 'apply' | 'admin-slots') => {
     const year = currentDate.getFullYear();
@@ -265,12 +262,9 @@ const App = () => {
       <div className="w-full max-w-2xl p-6 fade-in mx-auto mt-6">
         <div className="bg-white rounded-[2.5rem] shadow-2xl p-8 sm:p-12">
           <button onClick={() => setAdminMode('list')} className="mb-8 text-gray-400 font-bold flex items-center gap-2 hover:text-gray-800">← 관리 목록으로</button>
-          
           <h2 className="text-3xl font-black mb-2 text-gray-900">클라우드 제어 센터</h2>
           <p className="text-sm text-gray-400 mb-10 font-medium">여러 기기에서 동일한 예약 명단을 공유하기 위한 설정입니다.</p>
-          
           <div className="space-y-10">
-            {/* ID 설정 및 상태 */}
             <div className="p-8 bg-gray-50 rounded-[2rem] border-2 border-gray-100">
                <div className="flex items-center justify-between mb-6">
                   <h4 className="text-sm font-black text-gray-800 uppercase tracking-widest">저장소 ID (npoint.io)</h4>
@@ -283,13 +277,7 @@ const App = () => {
                   <input value={cloudId} onChange={e => { setCloudId(e.target.value); setCloudStatus('idle'); }} className="flex-1 px-5 py-4 bg-white border-2 border-transparent rounded-2xl font-black focus:border-blue-500 outline-none shadow-sm" placeholder="20자리 ID를 입력하세요" />
                   <button onClick={testConnection} className="px-6 py-4 bg-gray-900 text-white rounded-2xl font-black text-sm hover:bg-black transition-all">연결 테스트</button>
                </div>
-               <p className="mt-4 text-[11px] text-gray-400 font-medium leading-relaxed">
-                 ※ npoint.io에서 발급받은 ID를 PC와 모바일에 똑같이 입력하세요.<br/>
-                 ID 발급이 어렵다면 npoint 사이트에서 새 JSON을 만들어 주소창 끝의 영문/숫자 조합을 복사해 오면 됩니다.
-               </p>
             </div>
-
-            {/* 동기화 컨트롤 */}
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
                <button onClick={() => handleSync('merge')} className="flex flex-col items-center justify-center p-6 bg-purple-50 text-purple-700 border-2 border-purple-100 rounded-[1.5rem] hover:bg-purple-100 transition-all group">
                   <div className="w-10 h-10 bg-purple-600 text-white rounded-xl flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
@@ -298,24 +286,21 @@ const App = () => {
                   <span className="font-black text-sm">스마트 병합</span>
                   <span className="text-[10px] opacity-60 mt-1 font-bold">양쪽 합치기</span>
                </button>
-               
                <button onClick={() => handleSync('push')} className="flex flex-col items-center justify-center p-6 bg-blue-50 text-blue-700 border-2 border-blue-100 rounded-[1.5rem] hover:bg-blue-100 transition-all group">
                   <div className="w-10 h-10 bg-blue-600 text-white rounded-xl flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
                     <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"></path></svg>
                   </div>
                   <span className="font-black text-sm">강제 업로드</span>
-                  <span className="text-[10px] opacity-60 mt-1 font-bold">현재 기기 -> 서버</span>
+                  <span className="text-[10px] opacity-60 mt-1 font-bold">기기 &rarr; 서버</span>
                </button>
-
                <button onClick={() => handleSync('pull')} className="flex flex-col items-center justify-center p-6 bg-orange-50 text-orange-700 border-2 border-orange-100 rounded-[1.5rem] hover:bg-orange-100 transition-all group">
                   <div className="w-10 h-10 bg-orange-500 text-white rounded-xl flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
                     <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M9 13l3 3m0 0l3-3m-3 3V10"></path></svg>
                   </div>
                   <span className="font-black text-sm">기기로 가져오기</span>
-                  <span className="text-[10px] opacity-60 mt-1 font-bold">서버 -> 현재 기기</span>
+                  <span className="text-[10px] opacity-60 mt-1 font-bold">서버 &rarr; 기기</span>
                </button>
             </div>
-            
             <button onClick={() => { alert('설정이 저장되었습니다.'); setAdminMode('list'); }} className="w-full py-5 bg-gray-900 text-white font-black rounded-3xl shadow-xl hover:bg-black transition-all">설정 완료 및 닫기</button>
           </div>
         </div>
@@ -329,28 +314,21 @@ const App = () => {
             <h2 className="text-3xl font-black text-gray-900">신청 관리 센터</h2>
             <div className="flex items-center gap-2 mt-1">
                <span className={`w-2 h-2 rounded-full ${cloudStatus === 'success' ? 'bg-green-500' : 'bg-red-400'}`}></span>
-               <p className="text-sm text-gray-500 font-bold">
-                 {cloudStatus === 'success' ? `클라우드 동기화 준비됨` : '클라우드 연동 필요'}
-               </p>
+               <p className="text-sm text-gray-500 font-bold">{cloudStatus === 'success' ? `클라우드 동기화 준비됨` : '클라우드 연동 필요'}</p>
             </div>
           </div>
           <div className="flex flex-wrap gap-3 w-full sm:w-auto">
-            <button onClick={() => handleSync('merge')} className="flex-1 sm:flex-none px-6 py-3 bg-purple-600 text-white rounded-2xl font-black shadow-lg hover:bg-purple-700 transition-all flex items-center justify-center gap-2">
-              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-              실시간 동기화
-            </button>
+            <button onClick={() => handleSync('merge')} className="flex-1 sm:flex-none px-6 py-3 bg-purple-600 text-white rounded-2xl font-black shadow-lg flex items-center justify-center gap-2"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>실시간 동기화</button>
             <button onClick={() => setAdminMode('slots')} className="flex-1 sm:flex-none px-6 py-3 bg-blue-600 text-white rounded-2xl font-black shadow-lg">정원 설정</button>
             <button onClick={() => setAdminMode('settings')} className="flex-1 sm:flex-none px-6 py-3 bg-gray-200 text-gray-700 rounded-2xl font-black">클라우드 설정</button>
             <button onClick={() => { setView('home'); setIsAdminAuthenticated(false); }} className="flex-1 sm:flex-none px-6 py-3 bg-gray-100 text-gray-400 rounded-2xl font-black">로그아웃</button>
           </div>
         </div>
-        
         <div className="flex gap-2 mb-8 overflow-x-auto pb-2 scrollbar-hide">
           {INDUSTRIES.map(tab => (
             <button key={tab} onClick={() => setActiveAdminTab(tab)} className={`px-8 py-4 rounded-[1.5rem] font-black whitespace-nowrap transition-all ${activeAdminTab === tab ? 'bg-blue-600 text-white shadow-xl scale-105' : 'bg-white text-gray-400 border-2 border-transparent hover:border-gray-100'}`}>{tab}</button>
           ))}
         </div>
-
         <div className="bg-white rounded-[2.5rem] shadow-xl overflow-hidden">
           <div className="overflow-x-auto">
             <table className="w-full text-left min-w-[700px]">
@@ -381,7 +359,6 @@ const App = () => {
 
   return (
     <div className="min-h-screen bg-[#f8fafc] w-full flex flex-col items-center font-sans overflow-x-hidden">
-      {/* 동기화 중 오버레이 */}
       {isSyncing && (
         <div className="fixed inset-0 bg-white/80 backdrop-blur-md z-[999] flex flex-col items-center justify-center fade-in text-center">
           <div className="w-16 h-16 border-4 border-purple-600 border-t-transparent rounded-full animate-spin mb-6"></div>
@@ -397,7 +374,7 @@ const App = () => {
           </button>
           <div className="text-center mb-16 px-4">
             <h1 className="text-4xl sm:text-5xl font-black text-gray-900 mb-4 tracking-tight">안전교육 신청 시스템</h1>
-            <p className="text-gray-400 font-bold text-lg">PC와 모바일 실시간 동기화를 지원합니다.</p>
+            <p className="text-gray-400 font-bold text-lg">기기 간 실시간 동기화를 지원합니다.</p>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-6 w-full max-w-5xl mb-20 px-4">
             {INDUSTRIES.map(industry => (
@@ -410,9 +387,7 @@ const App = () => {
               </button>
             ))}
           </div>
-          <button onClick={() => { setView('search'); setSearchResults(null); }} className="w-full max-w-md py-5 bg-white border-2 border-gray-100 text-gray-500 font-black rounded-3xl hover:bg-gray-50 shadow-md">
-            내 신청 내역 조회하기
-          </button>
+          <button onClick={() => { setView('search'); setSearchResults(null); }} className="w-full max-w-md py-5 bg-white border-2 border-gray-100 text-gray-500 font-black rounded-3xl hover:bg-gray-50 shadow-md">내 신청 내역 조회하기</button>
         </div>
       )}
 
@@ -420,7 +395,7 @@ const App = () => {
         <div className="flex flex-col items-center w-full px-4 sm:px-6 py-12">
           {!selectedDate ? renderCalendar('apply') : (
             <div className="w-full max-w-md bg-white rounded-[2.5rem] shadow-2xl p-8 sm:p-10 fade-in">
-              <button onClick={() => setSelectedDate(null)} className="mb-6 text-gray-400 font-bold flex items-center gap-2 hover:text-gray-800">← 날짜 다시 선택</button>
+              <button onClick={() => setSelectedDate(null)} className="mb-6 text-gray-400 font-bold flex items-center gap-2 hover:text-gray-800">&larr; 날짜 다시 선택</button>
               <h3 className="text-3xl font-black mb-1 text-gray-900">{selectedDate}</h3>
               <p className="text-sm text-blue-600 font-black mb-10 tracking-widest uppercase">{selectedIndustry} (잔여: {getRemainingSlots(selectedDate, selectedIndustry!)}석)</p>
               <form onSubmit={handleApply} className="space-y-6">
@@ -436,7 +411,6 @@ const App = () => {
 
       {view === 'admin' && renderAdmin()}
 
-      {/* 수정 모달 */}
       {editingApp && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-6">
           <div className="bg-white w-full max-w-md rounded-[2.5rem] p-10 shadow-2xl">
@@ -463,8 +437,8 @@ const App = () => {
       {view === 'search' && (
          <div className="flex flex-col items-center justify-center min-h-screen p-4 sm:p-6 w-full fade-in">
             <div className="w-full max-w-md bg-white rounded-[2.5rem] shadow-2xl p-10">
-               <button onClick={() => setView('home')} className="mb-8 text-gray-400 font-bold flex items-center gap-2 hover:text-gray-900">← 홈으로</button>
-               <h2 className="text-3xl font-black mb-10 text-gray-900">내역 조회</h2>
+               <button onClick={() => setView('home')} className="mb-8 text-gray-400 font-bold flex items-center gap-2 hover:text-gray-900">&larr; 홈으로</button>
+               <h2 className="text-3xl font-black mb-10 text-gray-900">신청 내역 조회</h2>
                <div className="space-y-5">
                   <input value={searchName} onChange={e => setSearchName(e.target.value)} className="w-full px-6 py-5 bg-gray-50 border-2 border-gray-50 rounded-3xl outline-none focus:border-blue-500 font-bold" placeholder="신청자 이름" />
                   <input value={searchPhone} onChange={e => setSearchPhone(e.target.value)} className="w-full px-6 py-5 bg-gray-50 border-2 border-gray-50 rounded-3xl outline-none focus:border-blue-500 font-bold" placeholder="연락처 (뒤 4자리도 가능)" />
