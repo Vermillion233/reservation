@@ -6,7 +6,7 @@ type Industry = '건설업' | '제조업' | '서비스업' | '공공기관';
 
 interface Application {
   id: string;
-  date: string; // YYYY-MM-DD
+  date: string; 
   industry: Industry;
   company: string;
   applicant: string;
@@ -17,9 +17,8 @@ interface Application {
 const DEFAULT_SLOTS = 30;
 const INDUSTRIES: Industry[] = ['건설업', '제조업', '서비스업', '공공기관'];
 
-// --- 공용 클라우드 저장소 (npoint.io 활용) ---
-// 이 URL이 PC와 모바일의 공용 데이터 통로가 됩니다.
-const CLOUD_STORAGE_URL = 'https://api.npoint.io/0689b14f86d8a7051f68'; 
+// 기본 클라우드 ID (문제가 생기면 관리자 페이지에서 변경 가능)
+const DEFAULT_CLOUD_ID = '0689b14f86d8a7051f68';
 
 // --- 유틸리티 ---
 const formatDate = (date: Date): string => {
@@ -41,11 +40,12 @@ const App = () => {
   const [selectedIndustry, setSelectedIndustry] = useState<Industry | null>(null);
   const [apps, setApps] = useState<Application[]>([]);
   const [customSlots, setCustomSlots] = useState<Record<string, number>>({}); 
+  const [cloudId, setCloudId] = useState(DEFAULT_CLOUD_ID);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [adminPassword, setAdminPassword] = useState('');
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
   const [activeAdminTab, setActiveAdminTab] = useState<Industry>('건설업');
-  const [adminMode, setAdminMode] = useState<'list' | 'slots'>('list');
+  const [adminMode, setAdminMode] = useState<'list' | 'slots' | 'settings'>('list');
   
   const [currentDate, setCurrentDate] = useState(new Date());
   const [searchName, setSearchName] = useState('');
@@ -60,8 +60,10 @@ const App = () => {
     try {
       const savedApps = localStorage.getItem('app_bookings');
       const savedSlots = localStorage.getItem('app_custom_slots_v3'); 
+      const savedCloudId = localStorage.getItem('app_cloud_id');
       if (savedApps) setApps(JSON.parse(savedApps));
       if (savedSlots) setCustomSlots(JSON.parse(savedSlots));
+      if (savedCloudId) setCloudId(savedCloudId);
     } catch (e) {
       console.error("Storage load error", e);
     }
@@ -71,7 +73,8 @@ const App = () => {
   useEffect(() => {
     localStorage.setItem('app_bookings', JSON.stringify(apps));
     localStorage.setItem('app_custom_slots_v3', JSON.stringify(customSlots));
-  }, [apps, customSlots]);
+    localStorage.setItem('app_cloud_id', cloudId);
+  }, [apps, customSlots, cloudId]);
 
   // 잔여석 계산
   const getRemainingSlots = (dateStr: string, industry: Industry) => {
@@ -86,22 +89,31 @@ const App = () => {
     return customSlots[key] ?? DEFAULT_SLOTS;
   };
 
-  // --- 원터치 클라우드 동기화 (병합 방식) ---
+  // --- 원터치 클라우드 동기화 (강력한 예외 처리 포함) ---
   const handleGlobalSync = async () => {
     setIsSyncing(true);
+    const syncUrl = `https://api.npoint.io/${cloudId}`;
+    
     try {
-      // 1. 서버 데이터 시도
       let cloudApps: Application[] = [];
       let cloudSlots: Record<string, number> = {};
 
-      const res = await fetch(CLOUD_STORAGE_URL);
-      if (res.ok) {
-        const text = await res.text();
-        if (text && text.trim().length > 0) {
-          const cloudData = JSON.parse(text);
-          cloudApps = cloudData.apps || [];
-          cloudSlots = cloudData.slots || {};
+      // 1. 서버 데이터 시도 (404나 SyntaxError 방어)
+      try {
+        const res = await fetch(syncUrl);
+        if (res.ok) {
+          const text = await res.text();
+          // 데이터가 있고 올바른 JSON 형태일 때만 파싱
+          if (text && text.trim().startsWith('{')) {
+            const cloudData = JSON.parse(text);
+            cloudApps = cloudData.apps || [];
+            cloudSlots = cloudData.slots || {};
+          }
+        } else {
+          console.warn("Cloud storage not initialized or 404. Will create new entry.");
         }
+      } catch (fetchErr) {
+        console.warn("Failed to fetch cloud data, assuming fresh start.", fetchErr);
       }
 
       // 2. 스마트 병합 (ID 기반 중복 제거)
@@ -112,26 +124,26 @@ const App = () => {
         }
       });
 
-      // 3. 정원 설정 병합 (두 기기 중 값이 있는 쪽 우선, 충돌 시 최신 로컬 데이터 우선)
+      // 3. 정원 설정 병합
       const mergedSlots = { ...cloudSlots, ...customSlots };
 
       // 4. 합쳐진 데이터를 서버에 다시 업로드
-      const updateRes = await fetch(CLOUD_STORAGE_URL, {
+      const updateRes = await fetch(syncUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ apps: mergedApps, slots: mergedSlots, lastSynced: Date.now() })
       });
 
-      if (!updateRes.ok) throw new Error("Update failed");
+      if (!updateRes.ok) throw new Error("Cloud update failed");
 
       // 5. 로컬 상태 업데이트
       setApps(mergedApps);
       setCustomSlots(mergedSlots);
       
-      alert('동기화 성공! 다른 기기의 데이터와 현재 기기의 데이터를 하나로 합쳤습니다.');
+      alert('동기화 성공! 기기 간의 데이터가 하나로 합쳐졌습니다.');
     } catch (e) {
       console.error(e);
-      alert('동기화 실패: 서버 연결이 원활하지 않습니다. 잠시 후 다시 시도해 주세요.');
+      alert('동기화 실패: 인터넷 연결을 확인하거나 관리자 설정에서 클라우드 ID를 확인하세요.');
     } finally {
       setIsSyncing(false);
     }
@@ -181,7 +193,7 @@ const App = () => {
           onClick={() => {
             if (mode === 'apply') setSelectedDate(dateStr);
             else {
-              const newTotal = prompt(`${dateStr} [${targetIndustry}]의 총 정원을 설정하세요:`, String(total));
+              const newTotal = prompt(`${dateStr} 정원을 설정하세요:`, String(total));
               if (newTotal && !isNaN(Number(newTotal))) {
                 setCustomSlots(prev => ({ ...prev, [`${targetIndustry}_${dateStr}`]: Number(newTotal) }));
               }
@@ -209,7 +221,7 @@ const App = () => {
             <button onClick={() => setCurrentDate(new Date(year, month - 1, 1))} className="p-2 hover:bg-gray-100 rounded-full"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7"></path></svg></button>
             <div className="text-center">
               <h2 className="text-2xl font-black text-gray-900">{year}년 {month + 1}월</h2>
-              <span className="text-xs text-blue-600 font-black tracking-widest uppercase">{targetIndustry} {mode === 'admin-slots' && 'LIMIT SETTING'}</span>
+              <span className="text-xs text-blue-600 font-black tracking-widest uppercase">{targetIndustry} {mode === 'admin-slots' && '정원설정'}</span>
             </div>
             <button onClick={() => setCurrentDate(new Date(year, month + 1, 1))} className="p-2 hover:bg-gray-100 rounded-full"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7"></path></svg></button>
           </div>
@@ -219,7 +231,6 @@ const App = () => {
           {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => <div key={d}>{d}</div>)}
         </div>
         <div className="grid grid-cols-7 gap-1 sm:gap-2">{days}</div>
-        {mode === 'admin-slots' && <p className="mt-6 text-center text-xs text-gray-400 font-medium">※ 날짜를 클릭하여 해당 산업군의 예약 정원을 변경하세요.</p>}
       </div>
     );
   };
@@ -229,29 +240,47 @@ const App = () => {
       <div className="w-full max-w-sm bg-white rounded-[2.5rem] shadow-2xl p-10 text-center fade-in mt-20 mx-4">
         <h2 className="text-2xl font-black mb-8 text-gray-900">관리자 모드</h2>
         <form onSubmit={(e) => { e.preventDefault(); if (adminPassword === '1234') setIsAdminAuthenticated(true); else alert('비밀번호가 일치하지 않습니다.'); }} className="space-y-4">
-          <input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} className="w-full px-4 py-4 bg-gray-50 border-2 border-gray-50 rounded-2xl text-center text-xl tracking-[0.5em] outline-none focus:border-blue-500 transition-all" placeholder="PASSWORD" autoFocus />
-          <button type="submit" className="w-full py-4 bg-gray-900 text-white font-black rounded-2xl shadow-lg hover:bg-black transition-all">접속하기</button>
+          <input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} className="w-full px-4 py-4 bg-gray-50 border-2 border-gray-50 rounded-2xl text-center text-xl tracking-[0.5em] outline-none focus:border-blue-500 transition-all" placeholder="비번: 1234" autoFocus />
+          <button type="submit" className="w-full py-4 bg-gray-900 text-white font-black rounded-2xl shadow-lg hover:bg-black transition-all">로그인</button>
           <button type="button" onClick={() => setView('home')} className="text-sm text-gray-400 font-bold hover:text-gray-600 pt-2">홈으로 돌아가기</button>
         </form>
       </div>
     );
 
     if (adminMode === 'slots') return <div className="w-full flex flex-col items-center px-4 py-8">{renderCalendar('admin-slots')}</div>;
+    
+    if (adminMode === 'settings') return (
+      <div className="w-full max-w-md p-6 fade-in mx-auto mt-10">
+        <div className="bg-white rounded-[2.5rem] shadow-2xl p-10">
+          <button onClick={() => setAdminMode('list')} className="mb-6 text-gray-400 font-bold flex items-center gap-2">← 뒤로가기</button>
+          <h2 className="text-2xl font-black mb-8">클라우드 설정</h2>
+          <div className="space-y-6">
+            <div className="space-y-2">
+              <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">npoint Cloud ID</label>
+              <input value={cloudId} onChange={e => setCloudId(e.target.value)} className="w-full px-5 py-4 bg-gray-50 border-2 border-gray-100 rounded-2xl font-bold focus:border-blue-500 outline-none" placeholder="ID를 입력하세요" />
+            </div>
+            <p className="text-xs text-gray-400 leading-relaxed">※ PC와 모바일의 ID가 동일해야 서로 데이터가 합쳐집니다. 현재 경로에 오류가 나면 새로운 ID를 npoint.io에서 발급받아 교체하세요.</p>
+            <button onClick={() => { alert('설정이 저장되었습니다.'); setAdminMode('list'); }} className="w-full py-4 bg-blue-600 text-white font-black rounded-2xl shadow-lg">저장하기</button>
+          </div>
+        </div>
+      </div>
+    );
 
     return (
       <div className="w-full max-w-6xl p-4 sm:p-6 fade-in">
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-10 gap-6">
           <div>
             <h2 className="text-3xl font-black text-gray-900">신청 관리 센터</h2>
-            <p className="text-sm text-gray-500 font-bold">전체 {apps.length}건의 데이터가 관리 중입니다.</p>
+            <p className="text-sm text-gray-500 font-bold">기기 데이터 {apps.length}건 / 클라우드 ID: {cloudId}</p>
           </div>
           <div className="flex flex-wrap gap-3 w-full sm:w-auto">
             <button onClick={handleGlobalSync} className="flex-1 sm:flex-none px-6 py-3 bg-purple-600 text-white rounded-2xl font-black shadow-lg hover:bg-purple-700 transition-all flex items-center justify-center gap-2">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-              클라우드 동기화
+              데이터 동기화
             </button>
-            <button onClick={() => setAdminMode('slots')} className="flex-1 sm:flex-none px-6 py-3 bg-blue-600 text-white rounded-2xl font-black shadow-lg hover:bg-blue-700">정원 설정</button>
-            <button onClick={() => { setView('home'); setIsAdminAuthenticated(false); }} className="flex-1 sm:flex-none px-6 py-3 bg-gray-100 text-gray-600 rounded-2xl font-black hover:bg-gray-200">로그아웃</button>
+            <button onClick={() => setAdminMode('slots')} className="flex-1 sm:flex-none px-6 py-3 bg-blue-600 text-white rounded-2xl font-black shadow-lg">정원 설정</button>
+            <button onClick={() => setAdminMode('settings')} className="flex-1 sm:flex-none px-6 py-3 bg-gray-200 text-gray-700 rounded-2xl font-black">클라우드 설정</button>
+            <button onClick={() => { setView('home'); setIsAdminAuthenticated(false); }} className="flex-1 sm:flex-none px-6 py-3 bg-gray-100 text-gray-400 rounded-2xl font-black">로그아웃</button>
           </div>
         </div>
         
@@ -265,24 +294,24 @@ const App = () => {
           <div className="overflow-x-auto">
             <table className="w-full text-left min-w-[700px]">
               <thead className="bg-gray-50/50 border-b text-[10px] font-black text-gray-400 uppercase tracking-widest">
-                <tr><th className="px-8 py-5">Date</th><th className="px-8 py-5">Company</th><th className="px-8 py-5">Name</th><th className="px-8 py-5">Contact</th><th className="px-8 py-5 text-center">Actions</th></tr>
+                <tr><th className="px-8 py-5">날짜</th><th className="px-8 py-5">회사명</th><th className="px-8 py-5">성함</th><th className="px-8 py-5">연락처</th><th className="px-8 py-5 text-center">작업</th></tr>
               </thead>
               <tbody className="divide-y divide-gray-50">
                 {apps.filter(a => a.industry === activeAdminTab).sort((a,b) => b.createdAt - a.createdAt).map(app => (
-                  <tr key={app.id} className="hover:bg-blue-50/30 transition-colors group">
+                  <tr key={app.id} className="hover:bg-blue-50/30 transition-colors">
                     <td className="px-8 py-5 font-black text-blue-600">{app.date}</td>
                     <td className="px-8 py-5 font-bold text-gray-900">{app.company}</td>
                     <td className="px-8 py-5 font-medium text-gray-700">{app.applicant}</td>
                     <td className="px-8 py-5 text-gray-400 text-sm">{app.phone}</td>
                     <td className="px-8 py-5 text-center">
-                      <button onClick={() => setEditingApp(app)} className="p-2.5 text-blue-400 hover:bg-blue-100 rounded-xl mr-2 transition-all"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg></button>
-                      <button onClick={() => { if(confirm('이 신청 내역을 삭제할까요?')) setApps(apps.filter(x => x.id !== app.id)); }} className="p-2.5 text-red-400 hover:bg-red-100 rounded-xl transition-all"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg></button>
+                      <button onClick={() => setEditingApp(app)} className="p-2 text-blue-400 hover:bg-blue-100 rounded-xl mr-2"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg></button>
+                      <button onClick={() => { if(confirm('삭제할까요?')) setApps(apps.filter(x => x.id !== app.id)); }} className="p-2 text-red-400 hover:bg-red-100 rounded-xl"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg></button>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-            {apps.filter(a => a.industry === activeAdminTab).length === 0 && <div className="py-24 text-center text-gray-300 font-bold">아직 신청 내역이 없습니다.</div>}
+            {apps.filter(a => a.industry === activeAdminTab).length === 0 && <div className="py-24 text-center text-gray-300 font-bold">내역이 없습니다.</div>}
           </div>
         </div>
       </div>
@@ -291,12 +320,10 @@ const App = () => {
 
   return (
     <div className="min-h-screen bg-[#f8fafc] w-full flex flex-col items-center font-sans overflow-x-hidden">
-      {/* 동기화 중 오버레이 */}
       {isSyncing && (
         <div className="fixed inset-0 bg-white/80 backdrop-blur-md z-[999] flex flex-col items-center justify-center fade-in">
           <div className="w-16 h-16 border-4 border-purple-600 border-t-transparent rounded-full animate-spin mb-6"></div>
           <h3 className="text-xl font-black text-purple-700">데이터 동기화 중...</h3>
-          <p className="text-sm text-gray-400 mt-2">서버와 연결하여 기기 간 데이터를 합치고 있습니다.</p>
         </div>
       )}
 
@@ -305,9 +332,9 @@ const App = () => {
           <button onClick={() => { setView('admin'); setAdminPassword(''); }} className="absolute top-8 right-8 p-4 text-gray-200 hover:text-gray-400 transition-all scale-125">
             <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
           </button>
-          <div className="text-center mb-16">
-            <h1 className="text-4xl sm:text-5xl font-black text-gray-900 mb-4 tracking-tight">안전교육 신청</h1>
-            <p className="text-gray-400 font-bold text-lg">산업군을 선택하여 교육을 예약하세요.</p>
+          <div className="text-center mb-16 px-4">
+            <h1 className="text-4xl sm:text-5xl font-black text-gray-900 mb-4 tracking-tight">안전교육 통합 신청</h1>
+            <p className="text-gray-400 font-bold text-lg">PC와 모바일 어디서나 실시간으로 연동됩니다.</p>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-6 w-full max-w-5xl mb-20 px-4">
             {INDUSTRIES.map(industry => (
@@ -316,13 +343,12 @@ const App = () => {
                 <div className="w-16 h-16 mb-4 bg-blue-50 rounded-2xl flex items-center justify-center text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-all scale-110">
                   <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
                 </div>
-                <span className="text-xl font-black text-gray-800 tracking-tight">{industry}</span>
+                <span className="text-xl font-black text-gray-800">{industry}</span>
               </button>
             ))}
           </div>
-          <button onClick={() => { setView('search'); setSearchResults(null); }} className="w-full max-w-md py-5 bg-white border-2 border-gray-100 text-gray-500 font-black rounded-3xl hover:bg-gray-50 transition-all shadow-md flex items-center justify-center gap-2">
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
-            조회하기
+          <button onClick={() => { setView('search'); setSearchResults(null); }} className="w-full max-w-md py-5 bg-white border-2 border-gray-100 text-gray-500 font-black rounded-3xl hover:bg-gray-50 shadow-md">
+            신청 내역 조회
           </button>
         </div>
       )}
@@ -331,23 +357,14 @@ const App = () => {
         <div className="flex flex-col items-center w-full px-4 sm:px-6 py-12">
           {!selectedDate ? renderCalendar('apply') : (
             <div className="w-full max-w-md bg-white rounded-[2.5rem] shadow-2xl p-8 sm:p-10 fade-in">
-              <button onClick={() => setSelectedDate(null)} className="mb-6 text-gray-400 font-bold flex items-center gap-2 hover:text-gray-800"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7"></path></svg> 날짜 다시 선택</button>
+              <button onClick={() => setSelectedDate(null)} className="mb-6 text-gray-400 font-bold flex items-center gap-2 hover:text-gray-800">← 뒤로가기</button>
               <h3 className="text-3xl font-black mb-1 text-gray-900">{selectedDate}</h3>
-              <p className="text-sm text-blue-600 font-black mb-10 tracking-widest uppercase">{selectedIndustry} (REMAINING: {getRemainingSlots(selectedDate, selectedIndustry!)}석)</p>
+              <p className="text-sm text-blue-600 font-black mb-10 tracking-widest uppercase">{selectedIndustry} (잔여: {getRemainingSlots(selectedDate, selectedIndustry!)}석)</p>
               <form onSubmit={handleApply} className="space-y-6">
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-gray-300 uppercase ml-2 tracking-widest">Company Name</label>
-                  <input required name="company" className="w-full px-5 py-5 bg-gray-50 border-2 border-transparent rounded-[1.25rem] focus:bg-white focus:border-blue-500 outline-none transition-all font-bold" placeholder="회사명을 입력하세요" />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-gray-300 uppercase ml-2 tracking-widest">Applicant Name</label>
-                  <input required name="applicant" className="w-full px-5 py-5 bg-gray-50 border-2 border-transparent rounded-[1.25rem] focus:bg-white focus:border-blue-500 outline-none transition-all font-bold" placeholder="신청자 성함을 입력하세요" />
-                </div>
-                <div className="space-y-1.5">
-                  <label className="text-[10px] font-black text-gray-300 uppercase ml-2 tracking-widest">Phone Number</label>
-                  <input required name="phone" className="w-full px-5 py-5 bg-gray-50 border-2 border-transparent rounded-[1.25rem] focus:bg-white focus:border-blue-500 outline-none transition-all font-bold" placeholder="연락처를 입력하세요" />
-                </div>
-                <button type="submit" className="w-full py-5 bg-blue-600 text-white font-black rounded-3xl shadow-xl hover:bg-blue-700 transition-all mt-4 text-lg">신청 등록</button>
+                <input required name="company" className="w-full px-5 py-5 bg-gray-50 border-2 border-transparent rounded-[1.25rem] focus:bg-white focus:border-blue-500 outline-none transition-all font-bold" placeholder="회사명" />
+                <input required name="applicant" className="w-full px-5 py-5 bg-gray-50 border-2 border-transparent rounded-[1.25rem] focus:bg-white focus:border-blue-500 outline-none transition-all font-bold" placeholder="신청자 성함" />
+                <input required name="phone" className="w-full px-5 py-5 bg-gray-50 border-2 border-transparent rounded-[1.25rem] focus:bg-white focus:border-blue-500 outline-none transition-all font-bold" placeholder="연락처" />
+                <button type="submit" className="w-full py-5 bg-blue-600 text-white font-black rounded-3xl shadow-xl hover:bg-blue-700 transition-all text-lg">신청 완료</button>
               </form>
             </div>
           )}
@@ -356,11 +373,10 @@ const App = () => {
 
       {view === 'admin' && renderAdmin()}
 
-      {/* 수정 모달 */}
       {editingApp && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-6">
           <div className="bg-white w-full max-w-md rounded-[2.5rem] p-10 shadow-2xl">
-            <h3 className="text-2xl font-black mb-8">내역 수정</h3>
+            <h3 className="text-2xl font-black mb-8">수정하기</h3>
             <form onSubmit={(e) => {
               e.preventDefault();
               const f = new FormData(e.currentTarget);
@@ -368,11 +384,11 @@ const App = () => {
               setEditingApp(null);
               alert('수정되었습니다.');
             }} className="space-y-5">
-              <input required name="c" defaultValue={editingApp.company} className="w-full px-5 py-4 bg-gray-50 border rounded-2xl outline-none focus:border-blue-500 font-bold" />
-              <input required name="a" defaultValue={editingApp.applicant} className="w-full px-5 py-4 bg-gray-50 border rounded-2xl outline-none focus:border-blue-500 font-bold" />
-              <input required name="p" defaultValue={editingApp.phone} className="w-full px-5 py-4 bg-gray-50 border rounded-2xl outline-none focus:border-blue-500 font-bold" />
+              <input required name="c" defaultValue={editingApp.company} className="w-full px-5 py-4 bg-gray-50 border rounded-2xl font-bold" />
+              <input required name="a" defaultValue={editingApp.applicant} className="w-full px-5 py-4 bg-gray-50 border rounded-2xl font-bold" />
+              <input required name="p" defaultValue={editingApp.phone} className="w-full px-5 py-4 bg-gray-50 border rounded-2xl font-bold" />
               <div className="flex gap-4 pt-4">
-                <button type="button" onClick={() => setEditingApp(null)} className="flex-1 py-4 bg-gray-100 rounded-2xl font-black text-gray-500">취소</button>
+                <button type="button" onClick={() => setEditingApp(null)} className="flex-1 py-4 bg-gray-100 rounded-2xl font-black text-gray-400">취소</button>
                 <button type="submit" className="flex-1 py-4 bg-blue-600 text-white font-black rounded-2xl shadow-lg">저장</button>
               </div>
             </form>
@@ -383,11 +399,11 @@ const App = () => {
       {view === 'search' && (
          <div className="flex flex-col items-center justify-center min-h-screen p-4 sm:p-6 w-full fade-in">
             <div className="w-full max-w-md bg-white rounded-[2.5rem] shadow-2xl p-10">
-               <button onClick={() => setView('home')} className="mb-8 text-gray-400 font-bold flex items-center gap-2 hover:text-gray-900"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7"></path></svg> 돌아가기</button>
-               <h2 className="text-3xl font-black mb-10 text-gray-900">신청 내역 조회</h2>
+               <button onClick={() => setView('home')} className="mb-8 text-gray-400 font-bold flex items-center gap-2 hover:text-gray-900">← 홈으로</button>
+               <h2 className="text-3xl font-black mb-10 text-gray-900">내역 조회</h2>
                <div className="space-y-5">
-                  <input value={searchName} onChange={e => setSearchName(e.target.value)} className="w-full px-6 py-5 bg-gray-50 border-2 border-gray-50 rounded-3xl outline-none focus:border-blue-500 transition-all font-bold" placeholder="신청자 이름" />
-                  <input value={searchPhone} onChange={e => setSearchPhone(e.target.value)} className="w-full px-6 py-5 bg-gray-50 border-2 border-gray-50 rounded-3xl outline-none focus:border-blue-500 transition-all font-bold" placeholder="연락처 뒤 4자리 또는 전체" />
+                  <input value={searchName} onChange={e => setSearchName(e.target.value)} className="w-full px-6 py-5 bg-gray-50 border-2 border-gray-50 rounded-3xl outline-none focus:border-blue-500 font-bold" placeholder="신청자 이름" />
+                  <input value={searchPhone} onChange={e => setSearchPhone(e.target.value)} className="w-full px-6 py-5 bg-gray-50 border-2 border-gray-50 rounded-3xl outline-none focus:border-blue-500 font-bold" placeholder="연락처 (뒤 4자리도 가능)" />
                   <button onClick={() => {
                     setSearchResults(apps.filter(a => a.applicant === searchName && (a.phone === searchPhone || a.phone.endsWith(searchPhone))));
                   }} className="w-full py-5 bg-blue-600 text-white font-black rounded-3xl shadow-xl mt-4">조회하기</button>
