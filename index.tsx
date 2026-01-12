@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 
@@ -18,6 +17,10 @@ interface Application {
 const DEFAULT_SLOTS = 30;
 const INDUSTRIES: Industry[] = ['건설업', '제조업', '서비스업', '공공기관'];
 
+// --- 공용 클라우드 저장소 (npoint.io 활용) ---
+// 이 URL을 통해 PC와 모바일이 동일한 저장소를 공유합니다.
+const CLOUD_STORAGE_URL = 'https://api.npoint.io/0689b14f86d8a7051f68'; 
+
 // --- 유틸리티 ---
 const formatDate = (date: Date): string => {
   const y = date.getFullYear();
@@ -32,10 +35,6 @@ const isPastDate = (year: number, month: number, day: number): boolean => {
   const target = new Date(year, month, day);
   return target < today;
 };
-
-// --- 클라우드 동기화 헬퍼 (무료 API 활용) ---
-// 6자리 숫자를 위해 npoint.io의 특정 슬롯을 활용하는 시뮬레이션
-const CLOUD_API = 'https://api.npoint.io/0689b14f86d8a7051f68'; 
 
 const App = () => {
   const [view, setView] = useState<'home' | 'apply' | 'admin' | 'search'>('home');
@@ -54,14 +53,12 @@ const App = () => {
   const [searchResults, setSearchResults] = useState<Application[] | null>(null);
   
   const [editingApp, setEditingApp] = useState<Application | null>(null);
-  const [syncModalOpen, setSyncModalOpen] = useState(false);
-  const [generatedCode, setGeneratedCode] = useState<string | null>(null);
-  const [isSyncLoading, setIsSyncLoading] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   // 로컬 스토리지 로드
   useEffect(() => {
     const savedApps = localStorage.getItem('app_bookings');
-    const savedSlots = localStorage.getItem('app_custom_slots_v2'); 
+    const savedSlots = localStorage.getItem('app_custom_slots_v3'); 
     if (savedApps) setApps(JSON.parse(savedApps));
     if (savedSlots) setCustomSlots(JSON.parse(savedSlots));
   }, []);
@@ -69,7 +66,7 @@ const App = () => {
   // 로컬 스토리지 저장
   useEffect(() => {
     localStorage.setItem('app_bookings', JSON.stringify(apps));
-    localStorage.setItem('app_custom_slots_v2', JSON.stringify(customSlots));
+    localStorage.setItem('app_custom_slots_v3', JSON.stringify(customSlots));
   }, [apps, customSlots]);
 
   // 잔여석 계산
@@ -85,53 +82,46 @@ const App = () => {
     return customSlots[key] ?? DEFAULT_SLOTS;
   };
 
-  // --- 6자리 숫자 동기화 로직 ---
-  const generateSyncCode = async () => {
-    setIsSyncLoading(true);
+  // --- 원터치 클라우드 동기화 (병합 방식) ---
+  const handleGlobalSync = async () => {
+    setIsSyncing(true);
     try {
-      // 6자리 랜덤 숫자 생성
-      const code = Math.floor(100000 + Math.random() * 900000).toString();
-      const payload = { apps, slots: customSlots, timestamp: Date.now() };
+      // 1. 서버 데이터 가져오기
+      const res = await fetch(CLOUD_STORAGE_URL);
+      const cloudData = await res.json();
       
-      // 실제 서비스 시에는 전용 서버가 필요하나, 여기서는 유저별 고유 코드를 코드 내에 포함하여 전송
-      // 데모를 위해 npoint의 데이터를 업데이트하는 방식으로 처리 (실제 배포시에는 해당 API의 제약이 있을 수 있음)
-      // 여기서는 가장 확실한 방법인 "코드 보기/입력" UI를 통해 수동 연동을 지원하되 6자리로 간소화
-      
-      const dataStr = btoa(encodeURIComponent(JSON.stringify(payload)));
-      // 데이터가 너무 크면 6자리에 담을 수 없으므로, 사실상 "코드"는 데이터의 키 역할을 해야 함.
-      // 일단 사용자가 요청한 "6자리 코드 보기" UI를 구현합니다.
-      setGeneratedCode(code);
-      localStorage.setItem(`sync_${code}`, dataStr); // 임시로 같은 브라우저 내 테스트용
-      
-      // 실제 기기 간 전송을 위해 전체 데이터를 6자리 숫자와 매칭하여 복사할 수 있게 함
-      alert(`연동 번호 [${code}]가 생성되었습니다.\n데이터 포함 코드가 클립보드에 복사됩니다.`);
-      navigator.clipboard.writeText(dataStr); 
-    } catch (e) {
-      alert('코드 생성 실패');
-    } finally {
-      setIsSyncLoading(false);
-    }
-  };
+      // 초기 데이터 구조 확인
+      const cloudApps: Application[] = cloudData.apps || [];
+      const cloudSlots: Record<string, number> = cloudData.slots || {};
 
-  const syncByCode = (inputCode: string) => {
-    try {
-      // 입력된 코드가 데이터 형태라면 바로 처리, 아니라면 저장된 값 확인
-      const decoded = JSON.parse(decodeURIComponent(atob(inputCode)));
-      if (decoded.apps && decoded.slots) {
-        // 병합(Merge) 로직
-        const combinedApps = [...apps, ...decoded.apps];
-        const uniqueApps = combinedApps.filter((app, index, self) =>
-          index === self.findIndex((t) => t.id === app.id)
-        );
-        const mergedSlots = { ...customSlots, ...decoded.slots };
-        
-        setApps(uniqueApps);
-        setCustomSlots(mergedSlots);
-        alert(`동기화 성공! 새 내역 ${uniqueApps.length - apps.length}건이 추가되었습니다.`);
-        setSyncModalOpen(false);
-      }
+      // 2. 스마트 병합 (ID 기반 중복 제거)
+      const mergedApps = [...apps];
+      cloudApps.forEach((cApp) => {
+        if (!mergedApps.find(a => a.id === cApp.id)) {
+          mergedApps.push(cApp);
+        }
+      });
+
+      // 3. 정원 설정 병합 (값이 있는 쪽 우선)
+      const mergedSlots = { ...cloudSlots, ...customSlots };
+
+      // 4. 합쳐진 데이터를 서버에 다시 업로드
+      await fetch(CLOUD_STORAGE_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apps: mergedApps, slots: mergedSlots, lastSynced: Date.now() })
+      });
+
+      // 5. 로컬 상태 업데이트
+      setApps(mergedApps);
+      setCustomSlots(mergedSlots);
+      
+      alert('동기화 완료! PC와 모바일 데이터가 성공적으로 합쳐졌습니다.');
     } catch (e) {
-      alert('유효하지 않은 연동 코드입니다.');
+      console.error(e);
+      alert('동기화 실패: 네트워크 연결을 확인해 주세요.');
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -155,13 +145,7 @@ const App = () => {
     setView('home');
   };
 
-  const handleAdminLogin = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (adminPassword === '1234') setIsAdminAuthenticated(true);
-    else { alert('비번 오류'); setAdminPassword(''); }
-  };
-
-  // --- 렌더링 ---
+  // --- 렌더링 파트 ---
 
   const renderCalendar = (mode: 'apply' | 'admin-slots') => {
     const year = currentDate.getFullYear();
@@ -169,7 +153,6 @@ const App = () => {
     const firstDay = new Date(year, month, 1).getDay();
     const lastDate = new Date(year, month + 1, 0).getDate();
     const days = [];
-    // Fix: Move targetIndustry declaration outside the loop to ensure it's accessible in the return statement.
     const targetIndustry = mode === 'apply' ? selectedIndustry! : activeAdminTab;
 
     for (let i = 0; i < firstDay; i++) days.push(<div key={`empty-${i}`} className="p-1 sm:p-2"></div>);
@@ -186,7 +169,7 @@ const App = () => {
           onClick={() => {
             if (mode === 'apply') setSelectedDate(dateStr);
             else {
-              const newTotal = prompt(`${dateStr} 정원을 입력하세요:`, String(total));
+              const newTotal = prompt(`${dateStr} [${targetIndustry}]의 총 정원을 설정하세요:`, String(total));
               if (newTotal && !isNaN(Number(newTotal))) {
                 setCustomSlots(prev => ({ ...prev, [`${targetIndustry}_${dateStr}`]: Number(newTotal) }));
               }
@@ -198,70 +181,45 @@ const App = () => {
             'bg-white border-blue-50 hover:border-blue-500 hover:shadow-md'
           }`}>
           <span className="text-xs sm:text-sm font-bold self-start">{d}</span>
-          <span className={`text-[9px] sm:text-[10px] px-1.5 py-0.5 rounded-full ${isFull ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'}`}>
+          <span className={`text-[9px] sm:text-[10px] px-1.5 py-0.5 rounded-full font-bold ${isFull ? 'bg-red-100 text-red-600' : 'bg-blue-100 text-blue-600'}`}>
             {mode === 'admin-slots' ? `정원 ${total}` : (isFull ? '마감' : `${remaining}/${total}`)}
           </span>
         </button>
       );
     }
     return (
-      <div className="w-full max-w-5xl bg-white rounded-3xl shadow-xl p-4 sm:p-8 fade-in">
-        <div className="flex items-center justify-between mb-6">
-          <button onClick={() => mode === 'apply' ? setView('home') : setAdminMode('list')} className="text-gray-400 hover:text-gray-800">
+      <div className="w-full max-w-5xl bg-white rounded-[2rem] shadow-xl p-4 sm:p-8 fade-in">
+        <div className="flex items-center justify-between mb-8">
+          <button onClick={() => mode === 'apply' ? setView('home') : setAdminMode('list')} className="p-2 text-gray-400 hover:text-gray-800">
             <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7"></path></svg>
           </button>
-          <div className="flex items-center gap-4">
+          <div className="flex items-center gap-6">
             <button onClick={() => setCurrentDate(new Date(year, month - 1, 1))} className="p-2 hover:bg-gray-100 rounded-full"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7"></path></svg></button>
             <div className="text-center">
-              <h2 className="text-xl font-bold">{year}년 {month + 1}월</h2>
-              <span className="text-xs text-blue-600 font-bold">{targetIndustry} {mode === 'admin-slots' && '정원 수정'}</span>
+              <h2 className="text-2xl font-black text-gray-900">{year}년 {month + 1}월</h2>
+              <span className="text-xs text-blue-600 font-black tracking-widest uppercase">{targetIndustry} {mode === 'admin-slots' && 'LIMIT SETTING'}</span>
             </div>
             <button onClick={() => setCurrentDate(new Date(year, month + 1, 1))} className="p-2 hover:bg-gray-100 rounded-full"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M9 5l7 7-7 7"></path></svg></button>
           </div>
-          <div className="w-6"></div>
+          <div className="w-10"></div>
         </div>
-        <div className="grid grid-cols-7 gap-1 sm:gap-2 mb-2 text-center text-xs font-bold text-gray-300">
-          {['일', '월', '화', '수', '목', '금', '토'].map(d => <div key={d}>{d}</div>)}
+        <div className="grid grid-cols-7 gap-1 sm:gap-2 mb-4 text-center text-xs font-black text-gray-300 uppercase tracking-tighter">
+          {['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map(d => <div key={d}>{d}</div>)}
         </div>
         <div className="grid grid-cols-7 gap-1 sm:gap-2">{days}</div>
+        {mode === 'admin-slots' && <p className="mt-6 text-center text-xs text-gray-400 font-medium">※ 날짜를 클릭하여 해당 산업군의 예약 정원을 변경하세요.</p>}
       </div>
     );
   };
 
-  const renderHome = () => (
-    <div className="flex flex-col items-center justify-center min-h-screen p-6 fade-in relative w-full">
-      <button onClick={() => { setView('admin'); setAdminPassword(''); }} className="absolute top-6 right-6 p-3 text-gray-300 hover:text-gray-600 transition-colors">
-        <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
-      </button>
-      <div className="text-center mb-12">
-        <h1 className="text-3xl sm:text-4xl font-bold text-gray-800 mb-2">안전교육 신청 시스템</h1>
-        <p className="text-gray-500">산업군을 선택하여 교육을 신청하세요.</p>
-      </div>
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-4 w-full max-w-5xl mb-16 px-4">
-        {INDUSTRIES.map(industry => (
-          <button key={industry} onClick={() => { setSelectedIndustry(industry); setCurrentDate(new Date()); setView('apply'); }}
-            className="group h-40 sm:h-48 bg-white rounded-3xl border-2 border-gray-100 flex flex-col items-center justify-center shadow-sm hover:shadow-xl hover:border-blue-500 transition-all hover:-translate-y-1">
-            <div className="w-12 h-12 mb-3 bg-blue-50 rounded-2xl flex items-center justify-center text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-colors">
-              <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
-            </div>
-            <span className="text-lg sm:text-xl font-bold text-gray-800">{industry}</span>
-          </button>
-        ))}
-      </div>
-      <button onClick={() => { setView('search'); setSearchResults(null); }} className="w-full max-w-md py-4 bg-gray-100 text-gray-600 font-semibold rounded-2xl hover:bg-gray-200 transition-all flex items-center justify-center gap-2 mx-4">
-        교육신청 조회하기
-      </button>
-    </div>
-  );
-
   const renderAdmin = () => {
     if (!isAdminAuthenticated) return (
-      <div className="w-full max-w-sm bg-white rounded-3xl shadow-xl p-8 text-center fade-in mt-20 mx-4">
-        <h2 className="text-2xl font-bold mb-6 text-gray-800">관리자 로그인</h2>
-        <form onSubmit={handleAdminLogin} className="space-y-4">
-          <input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} className="w-full px-4 py-3 bg-gray-50 border rounded-xl text-center text-xl tracking-widest outline-none focus:ring-2 focus:ring-blue-500" placeholder="비밀번호" autoFocus />
-          <button type="submit" className="w-full py-3 bg-gray-800 text-white font-bold rounded-xl hover:bg-black transition-colors">접속</button>
-          <button type="button" onClick={() => setView('home')} className="text-sm text-gray-400 underline">돌아가기</button>
+      <div className="w-full max-w-sm bg-white rounded-[2.5rem] shadow-2xl p-10 text-center fade-in mt-20 mx-4">
+        <h2 className="text-2xl font-black mb-8 text-gray-900">관리자 모드</h2>
+        <form onSubmit={(e) => { e.preventDefault(); if (adminPassword === '1234') setIsAdminAuthenticated(true); else alert('비밀번호가 일치하지 않습니다.'); }} className="space-y-4">
+          <input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} className="w-full px-4 py-4 bg-gray-50 border-2 border-gray-50 rounded-2xl text-center text-xl tracking-[0.5em] outline-none focus:border-blue-500 transition-all" placeholder="PASSWORD" autoFocus />
+          <button type="submit" className="w-full py-4 bg-gray-900 text-white font-black rounded-2xl shadow-lg hover:bg-black transition-all">접속하기</button>
+          <button type="button" onClick={() => setView('home')} className="text-sm text-gray-400 font-bold hover:text-gray-600 pt-2">홈으로 돌아가기</button>
         </form>
       </div>
     );
@@ -270,46 +228,49 @@ const App = () => {
 
     return (
       <div className="w-full max-w-6xl p-4 sm:p-6 fade-in">
-        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-8 gap-4">
+        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-10 gap-6">
           <div>
-            <h2 className="text-2xl sm:text-3xl font-bold">신청 관리 센터</h2>
-            <p className="text-sm text-gray-400">총 {apps.length}건 / PC·모바일 통합 관리</p>
+            <h2 className="text-3xl font-black text-gray-900">신청 관리 센터</h2>
+            <p className="text-sm text-gray-500 font-bold">전체 {apps.length}건의 데이터가 관리 중입니다.</p>
           </div>
-          <div className="flex flex-wrap gap-2 w-full sm:w-auto">
-            <button onClick={() => setSyncModalOpen(true)} className="flex-1 sm:flex-none px-4 py-2 bg-purple-600 text-white rounded-xl font-bold shadow-md hover:bg-purple-700 transition-colors">기기 연동(6자리)</button>
-            <button onClick={() => setAdminMode('slots')} className="flex-1 sm:flex-none px-4 py-2 bg-blue-600 text-white rounded-xl font-bold shadow-md hover:bg-blue-700 transition-colors">정원 설정</button>
-            <button onClick={() => { setView('home'); setIsAdminAuthenticated(false); }} className="flex-1 sm:flex-none px-4 py-2 bg-gray-100 text-gray-600 rounded-xl font-bold">로그아웃</button>
+          <div className="flex flex-wrap gap-3 w-full sm:w-auto">
+            <button onClick={handleGlobalSync} className="flex-1 sm:flex-none px-6 py-3 bg-purple-600 text-white rounded-2xl font-black shadow-lg hover:bg-purple-700 transition-all flex items-center justify-center gap-2">
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+              클라우드 동기화
+            </button>
+            <button onClick={() => setAdminMode('slots')} className="flex-1 sm:flex-none px-6 py-3 bg-blue-600 text-white rounded-2xl font-black shadow-lg hover:bg-blue-700">정원 설정</button>
+            <button onClick={() => { setView('home'); setIsAdminAuthenticated(false); }} className="flex-1 sm:flex-none px-6 py-3 bg-gray-100 text-gray-600 rounded-2xl font-black hover:bg-gray-200">로그아웃</button>
           </div>
         </div>
         
-        <div className="flex gap-2 mb-6 overflow-x-auto pb-2 scrollbar-hide">
+        <div className="flex gap-2 mb-8 overflow-x-auto pb-2 scrollbar-hide">
           {INDUSTRIES.map(tab => (
-            <button key={tab} onClick={() => setActiveAdminTab(tab)} className={`px-6 py-3 rounded-2xl font-bold whitespace-nowrap transition-all ${activeAdminTab === tab ? 'bg-blue-600 text-white shadow-lg' : 'bg-white text-gray-500 border hover:bg-gray-50'}`}>{tab}</button>
+            <button key={tab} onClick={() => setActiveAdminTab(tab)} className={`px-8 py-4 rounded-[1.5rem] font-black whitespace-nowrap transition-all ${activeAdminTab === tab ? 'bg-blue-600 text-white shadow-xl scale-105' : 'bg-white text-gray-400 border-2 border-transparent hover:border-gray-100'}`}>{tab}</button>
           ))}
         </div>
 
-        <div className="bg-white rounded-3xl shadow-xl overflow-hidden">
+        <div className="bg-white rounded-[2.5rem] shadow-xl overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full text-left min-w-[600px]">
-              <thead className="bg-gray-50 border-b text-xs font-semibold text-gray-500 uppercase">
-                <tr><th className="px-6 py-4">교육일자</th><th className="px-6 py-4">회사명</th><th className="px-6 py-4">신청자</th><th className="px-6 py-4">연락처</th><th className="px-6 py-4 text-center">작업</th></tr>
+            <table className="w-full text-left min-w-[700px]">
+              <thead className="bg-gray-50/50 border-b text-[10px] font-black text-gray-400 uppercase tracking-widest">
+                <tr><th className="px-8 py-5">Date</th><th className="px-8 py-5">Company</th><th className="px-8 py-5">Name</th><th className="px-8 py-5">Contact</th><th className="px-8 py-5 text-center">Actions</th></tr>
               </thead>
-              <tbody className="divide-y">
+              <tbody className="divide-y divide-gray-50">
                 {apps.filter(a => a.industry === activeAdminTab).sort((a,b) => b.createdAt - a.createdAt).map(app => (
-                  <tr key={app.id} className="hover:bg-gray-50">
-                    <td className="px-6 py-4 font-bold text-blue-600">{app.date}</td>
-                    <td className="px-6 py-4 font-medium">{app.company}</td>
-                    <td className="px-6 py-4">{app.applicant}</td>
-                    <td className="px-6 py-4 text-gray-500 text-sm">{app.phone}</td>
-                    <td className="px-6 py-4 text-center">
-                      <button onClick={() => setEditingApp(app)} className="p-2 text-blue-500 hover:bg-blue-50 rounded-lg mr-2"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg></button>
-                      <button onClick={() => { if(confirm('삭제?')) setApps(apps.filter(x => x.id !== app.id)); }} className="p-2 text-red-500 hover:bg-red-50 rounded-lg"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg></button>
+                  <tr key={app.id} className="hover:bg-blue-50/30 transition-colors group">
+                    <td className="px-8 py-5 font-black text-blue-600">{app.date}</td>
+                    <td className="px-8 py-5 font-bold text-gray-900">{app.company}</td>
+                    <td className="px-8 py-5 font-medium text-gray-700">{app.applicant}</td>
+                    <td className="px-8 py-5 text-gray-400 text-sm">{app.phone}</td>
+                    <td className="px-8 py-5 text-center">
+                      <button onClick={() => setEditingApp(app)} className="p-2.5 text-blue-400 hover:bg-blue-100 rounded-xl mr-2 transition-all"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"></path></svg></button>
+                      <button onClick={() => { if(confirm('이 신청 내역을 삭제할까요?')) setApps(apps.filter(x => x.id !== app.id)); }} className="p-2.5 text-red-400 hover:bg-red-100 rounded-xl transition-all"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg></button>
                     </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-            {apps.filter(a => a.industry === activeAdminTab).length === 0 && <div className="py-20 text-center text-gray-400">신청 내역이 없습니다.</div>}
+            {apps.filter(a => a.industry === activeAdminTab).length === 0 && <div className="py-24 text-center text-gray-300 font-bold">아직 신청 내역이 없습니다.</div>}
           </div>
         </div>
       </div>
@@ -317,78 +278,90 @@ const App = () => {
   };
 
   return (
-    <div className="min-h-screen bg-[#f8fafc] w-full flex flex-col items-center font-sans">
-      {view === 'home' && renderHome()}
+    <div className="min-h-screen bg-[#f8fafc] w-full flex flex-col items-center font-sans overflow-x-hidden">
+      {/* 동기화 중 오버레이 */}
+      {isSyncing && (
+        <div className="fixed inset-0 bg-white/80 backdrop-blur-md z-[999] flex flex-col items-center justify-center fade-in">
+          <div className="w-16 h-16 border-4 border-purple-600 border-t-transparent rounded-full animate-spin mb-6"></div>
+          <h3 className="text-xl font-black text-purple-700">데이터 동기화 중...</h3>
+          <p className="text-sm text-gray-400 mt-2">서버와 연결하여 기기 간 데이터를 합치고 있습니다.</p>
+        </div>
+      )}
+
+      {view === 'home' && (
+        <div className="flex flex-col items-center justify-center min-h-screen p-6 fade-in relative w-full">
+          <button onClick={() => { setView('admin'); setAdminPassword(''); }} className="absolute top-8 right-8 p-4 text-gray-200 hover:text-gray-400 transition-all scale-125">
+            <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
+          </button>
+          <div className="text-center mb-16">
+            <h1 className="text-4xl sm:text-5xl font-black text-gray-900 mb-4 tracking-tight">안전교육 신청</h1>
+            <p className="text-gray-400 font-bold text-lg">산업군을 선택하여 교육을 예약하세요.</p>
+          </div>
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-6 w-full max-w-5xl mb-20 px-4">
+            {INDUSTRIES.map(industry => (
+              <button key={industry} onClick={() => { setSelectedIndustry(industry); setCurrentDate(new Date()); setView('apply'); }}
+                className="group h-44 sm:h-52 bg-white rounded-[2.5rem] border-2 border-gray-50 flex flex-col items-center justify-center shadow-sm hover:shadow-2xl hover:border-blue-500 transition-all hover:-translate-y-2">
+                <div className="w-16 h-16 mb-4 bg-blue-50 rounded-2xl flex items-center justify-center text-blue-600 group-hover:bg-blue-600 group-hover:text-white transition-all scale-110">
+                  <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0h-5m-9 0H3m2 0h5M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4"></path></svg>
+                </div>
+                <span className="text-xl font-black text-gray-800 tracking-tight">{industry}</span>
+              </button>
+            ))}
+          </div>
+          <button onClick={() => { setView('search'); setSearchResults(null); }} className="w-full max-w-md py-5 bg-white border-2 border-gray-100 text-gray-500 font-black rounded-3xl hover:bg-gray-50 transition-all shadow-md flex items-center justify-center gap-2">
+            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+            조회하기
+          </button>
+        </div>
+      )}
+
       {view === 'apply' && (
-        <div className="flex flex-col items-center w-full px-4 sm:px-6 py-8 sm:py-12">
+        <div className="flex flex-col items-center w-full px-4 sm:px-6 py-12">
           {!selectedDate ? renderCalendar('apply') : (
-            <div className="w-full max-w-md bg-white rounded-3xl shadow-2xl p-6 sm:p-8 fade-in">
-              <button onClick={() => setSelectedDate(null)} className="mb-4 text-gray-400">← 날짜 변경</button>
-              <h3 className="text-xl font-bold mb-2">{selectedDate} 신청</h3>
-              <p className="text-sm text-blue-600 mb-6">{selectedIndustry} (잔여 {getRemainingSlots(selectedDate, selectedIndustry!)}석)</p>
-              <form onSubmit={handleApply} className="space-y-4">
-                <input required name="company" className="w-full px-4 py-3 bg-gray-50 border rounded-xl" placeholder="회사명" />
-                <input required name="applicant" className="w-full px-4 py-3 bg-gray-50 border rounded-xl" placeholder="신청자명" />
-                <input required name="phone" className="w-full px-4 py-3 bg-gray-50 border rounded-xl" placeholder="연락처" />
-                <button type="submit" className="w-full py-4 bg-blue-600 text-white font-bold rounded-xl shadow-lg">신청 완료</button>
+            <div className="w-full max-w-md bg-white rounded-[2.5rem] shadow-2xl p-8 sm:p-10 fade-in">
+              <button onClick={() => setSelectedDate(null)} className="mb-6 text-gray-400 font-bold flex items-center gap-2 hover:text-gray-800"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7"></path></svg> 날짜 다시 선택</button>
+              <h3 className="text-3xl font-black mb-1 text-gray-900">{selectedDate}</h3>
+              <p className="text-sm text-blue-600 font-black mb-10 tracking-widest uppercase">{selectedIndustry} (REMAINING: {getRemainingSlots(selectedDate, selectedIndustry!)}석)</p>
+              <form onSubmit={handleApply} className="space-y-6">
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black text-gray-300 uppercase ml-2 tracking-widest">Company Name</label>
+                  <input required name="company" className="w-full px-5 py-5 bg-gray-50 border-2 border-transparent rounded-[1.25rem] focus:bg-white focus:border-blue-500 outline-none transition-all font-bold" placeholder="회사명을 입력하세요" />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black text-gray-300 uppercase ml-2 tracking-widest">Applicant Name</label>
+                  <input required name="applicant" className="w-full px-5 py-5 bg-gray-50 border-2 border-transparent rounded-[1.25rem] focus:bg-white focus:border-blue-500 outline-none transition-all font-bold" placeholder="신청자 성함을 입력하세요" />
+                </div>
+                <div className="space-y-1.5">
+                  <label className="text-[10px] font-black text-gray-300 uppercase ml-2 tracking-widest">Phone Number</label>
+                  <input required name="phone" className="w-full px-5 py-5 bg-gray-50 border-2 border-transparent rounded-[1.25rem] focus:bg-white focus:border-blue-500 outline-none transition-all font-bold" placeholder="연락처를 입력하세요" />
+                </div>
+                <button type="submit" className="w-full py-5 bg-blue-600 text-white font-black rounded-3xl shadow-xl hover:bg-blue-700 transition-all mt-4 text-lg">신청 등록</button>
               </form>
             </div>
           )}
         </div>
       )}
+
       {view === 'admin' && renderAdmin()}
-
-      {/* 6자리 코드 연동 모달 */}
-      {syncModalOpen && (
-        <div className="fixed inset-0 bg-black/60 backdrop-blur-sm flex items-center justify-center z-[100] p-6">
-          <div className="bg-white w-full max-w-md rounded-3xl p-8 shadow-2xl fade-in text-center">
-            <h3 className="text-2xl font-bold mb-2">기기 연동 (6자리)</h3>
-            <p className="text-sm text-gray-500 mb-8">데이터를 합치고 싶은 다른 기기에서 코드를 입력하세요.</p>
-            
-            <div className="space-y-8">
-              <div>
-                <div className="text-xs font-bold text-gray-400 mb-3 uppercase tracking-widest">내 연동 번호</div>
-                {generatedCode ? (
-                  <div className="text-5xl font-black text-blue-600 tracking-[0.5em] pl-4">{generatedCode}</div>
-                ) : (
-                  <button onClick={generateSyncCode} className="w-full py-4 bg-blue-600 text-white rounded-2xl font-bold text-lg shadow-xl">연동 코드 생성하기</button>
-                )}
-                {generatedCode && <p className="mt-4 text-sm text-gray-400">※ 코드가 생성되면서 데이터가 자동 복사되었습니다.</p>}
-              </div>
-
-              <div className="pt-8 border-t">
-                <div className="text-xs font-bold text-gray-400 mb-4 uppercase tracking-widest">상대 기기 코드 입력</div>
-                <input id="syncInput" className="w-full px-4 py-4 bg-gray-50 border-2 border-gray-100 rounded-2xl text-center text-xl font-bold mb-4 outline-none focus:border-blue-500" placeholder="번호 또는 코드 붙여넣기" />
-                <button onClick={() => {
-                  const val = (document.getElementById('syncInput') as HTMLInputElement).value;
-                  if (val) syncByCode(val);
-                }} className="w-full py-4 bg-purple-600 text-white rounded-2xl font-bold text-lg shadow-xl">데이터 병합하기</button>
-              </div>
-            </div>
-            
-            <button onClick={() => { setSyncModalOpen(false); setGeneratedCode(null); }} className="mt-8 text-gray-400 font-bold">닫기</button>
-          </div>
-        </div>
-      )}
 
       {/* 수정 모달 */}
       {editingApp && (
-        <div className="fixed inset-0 bg-black/50 backdrop-blur-sm flex items-center justify-center z-50 p-6">
-          <div className="bg-white w-full max-w-md rounded-3xl p-8 shadow-2xl">
-            <h3 className="text-xl font-bold mb-6">신청 정보 수정</h3>
+        <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-6">
+          <div className="bg-white w-full max-w-md rounded-[2.5rem] p-10 shadow-2xl">
+            <h3 className="text-2xl font-black mb-8">내역 수정</h3>
             <form onSubmit={(e) => {
               e.preventDefault();
               const f = new FormData(e.currentTarget);
               setApps(apps.map(a => a.id === editingApp.id ? { ...a, company: f.get('c') as string, applicant: f.get('a') as string, phone: f.get('p') as string } : a));
               setEditingApp(null);
-              alert('수정완료');
-            }} className="space-y-4">
-              <input required name="c" defaultValue={editingApp.company} className="w-full px-4 py-3 bg-gray-50 border rounded-xl" placeholder="회사명" />
-              <input required name="a" defaultValue={editingApp.applicant} className="w-full px-4 py-3 bg-gray-50 border rounded-xl" placeholder="신청자명" />
-              <input required name="p" defaultValue={editingApp.phone} className="w-full px-4 py-3 bg-gray-50 border rounded-xl" placeholder="연락처" />
-              <div className="flex gap-3 pt-4">
-                <button type="button" onClick={() => setEditingApp(null)} className="flex-1 py-3 bg-gray-100 rounded-xl">취소</button>
-                <button type="submit" className="flex-1 py-3 bg-blue-600 text-white font-bold rounded-xl">저장</button>
+              alert('수정되었습니다.');
+            }} className="space-y-5">
+              <input required name="c" defaultValue={editingApp.company} className="w-full px-5 py-4 bg-gray-50 border rounded-2xl outline-none focus:border-blue-500 font-bold" />
+              <input required name="a" defaultValue={editingApp.applicant} className="w-full px-5 py-4 bg-gray-50 border rounded-2xl outline-none focus:border-blue-500 font-bold" />
+              <input required name="p" defaultValue={editingApp.phone} className="w-full px-5 py-4 bg-gray-50 border rounded-2xl outline-none focus:border-blue-500 font-bold" />
+              <div className="flex gap-4 pt-4">
+                <button type="button" onClick={() => setEditingApp(null)} className="flex-1 py-4 bg-gray-100 rounded-2xl font-black text-gray-500">취소</button>
+                <button type="submit" className="flex-1 py-4 bg-blue-600 text-white font-black rounded-2xl shadow-lg">저장</button>
               </div>
             </form>
           </div>
@@ -397,26 +370,26 @@ const App = () => {
 
       {view === 'search' && (
          <div className="flex flex-col items-center justify-center min-h-screen p-4 sm:p-6 w-full fade-in">
-            <div className="w-full max-w-md bg-white rounded-3xl shadow-xl p-8">
-               <button onClick={() => setView('home')} className="mb-6 text-gray-400 flex items-center">← 뒤로</button>
-               <h2 className="text-2xl font-bold mb-8">신청 내역 조회</h2>
-               <div className="space-y-4">
-                  <input value={searchName} onChange={e => setSearchName(e.target.value)} className="w-full px-4 py-3 bg-gray-50 border rounded-xl" placeholder="신청자명" />
-                  <input value={searchPhone} onChange={e => setSearchPhone(e.target.value)} className="w-full px-4 py-3 bg-gray-50 border rounded-xl" placeholder="연락처" />
+            <div className="w-full max-w-md bg-white rounded-[2.5rem] shadow-2xl p-10">
+               <button onClick={() => setView('home')} className="mb-8 text-gray-400 font-bold flex items-center gap-2 hover:text-gray-900"><svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M15 19l-7-7 7-7"></path></svg> 돌아가기</button>
+               <h2 className="text-3xl font-black mb-10 text-gray-900">신청 내역 조회</h2>
+               <div className="space-y-5">
+                  <input value={searchName} onChange={e => setSearchName(e.target.value)} className="w-full px-6 py-5 bg-gray-50 border-2 border-gray-50 rounded-3xl outline-none focus:border-blue-500 transition-all font-bold" placeholder="신청자 이름" />
+                  <input value={searchPhone} onChange={e => setSearchPhone(e.target.value)} className="w-full px-6 py-5 bg-gray-50 border-2 border-gray-50 rounded-3xl outline-none focus:border-blue-500 transition-all font-bold" placeholder="연락처 뒤 4자리 또는 전체" />
                   <button onClick={() => {
-                    setSearchResults(apps.filter(a => a.applicant === searchName && a.phone === searchPhone));
-                  }} className="w-full py-4 bg-blue-600 text-white font-bold rounded-xl shadow-lg">조회하기</button>
+                    setSearchResults(apps.filter(a => a.applicant === searchName && (a.phone === searchPhone || a.phone.endsWith(searchPhone))));
+                  }} className="w-full py-5 bg-blue-600 text-white font-black rounded-3xl shadow-xl mt-4">조회하기</button>
                </div>
                {searchResults && (
-                 <div className="mt-8 space-y-4">
+                 <div className="mt-10 space-y-4">
                    {searchResults.map(a => (
-                     <div key={a.id} className="p-4 bg-blue-50 rounded-xl border border-blue-100">
-                       <div className="text-xs text-blue-600 font-bold">{a.date} ({a.industry})</div>
-                       <div className="font-bold">{a.company}</div>
-                       <div className="text-sm">{a.applicant} | {a.phone}</div>
+                     <div key={a.id} className="p-6 bg-blue-50 rounded-[1.5rem] border-2 border-blue-100">
+                       <div className="text-[10px] text-blue-600 font-black mb-1 uppercase tracking-widest">{a.date} ({a.industry})</div>
+                       <div className="font-black text-gray-900 text-xl mb-1">{a.company}</div>
+                       <div className="text-sm text-gray-500 font-medium">{a.applicant} | {a.phone}</div>
                      </div>
                    ))}
-                   {searchResults.length === 0 && <div className="text-center text-gray-400 py-8">결과가 없습니다.</div>}
+                   {searchResults.length === 0 && <div className="text-center text-gray-300 py-16 font-bold">검색 결과가 없습니다.</div>}
                  </div>
                )}
             </div>
