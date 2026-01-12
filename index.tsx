@@ -18,7 +18,7 @@ const DEFAULT_SLOTS = 30;
 const INDUSTRIES: Industry[] = ['건설업', '제조업', '서비스업', '공공기관'];
 
 // --- 공용 클라우드 저장소 (npoint.io 활용) ---
-// 이 URL을 통해 PC와 모바일이 동일한 저장소를 공유합니다.
+// 이 URL이 PC와 모바일의 공용 데이터 통로가 됩니다.
 const CLOUD_STORAGE_URL = 'https://api.npoint.io/0689b14f86d8a7051f68'; 
 
 // --- 유틸리티 ---
@@ -57,10 +57,14 @@ const App = () => {
 
   // 로컬 스토리지 로드
   useEffect(() => {
-    const savedApps = localStorage.getItem('app_bookings');
-    const savedSlots = localStorage.getItem('app_custom_slots_v3'); 
-    if (savedApps) setApps(JSON.parse(savedApps));
-    if (savedSlots) setCustomSlots(JSON.parse(savedSlots));
+    try {
+      const savedApps = localStorage.getItem('app_bookings');
+      const savedSlots = localStorage.getItem('app_custom_slots_v3'); 
+      if (savedApps) setApps(JSON.parse(savedApps));
+      if (savedSlots) setCustomSlots(JSON.parse(savedSlots));
+    } catch (e) {
+      console.error("Storage load error", e);
+    }
   }, []);
 
   // 로컬 스토리지 저장
@@ -86,13 +90,19 @@ const App = () => {
   const handleGlobalSync = async () => {
     setIsSyncing(true);
     try {
-      // 1. 서버 데이터 가져오기
+      // 1. 서버 데이터 시도
+      let cloudApps: Application[] = [];
+      let cloudSlots: Record<string, number> = {};
+
       const res = await fetch(CLOUD_STORAGE_URL);
-      const cloudData = await res.json();
-      
-      // 초기 데이터 구조 확인
-      const cloudApps: Application[] = cloudData.apps || [];
-      const cloudSlots: Record<string, number> = cloudData.slots || {};
+      if (res.ok) {
+        const text = await res.text();
+        if (text && text.trim().length > 0) {
+          const cloudData = JSON.parse(text);
+          cloudApps = cloudData.apps || [];
+          cloudSlots = cloudData.slots || {};
+        }
+      }
 
       // 2. 스마트 병합 (ID 기반 중복 제거)
       const mergedApps = [...apps];
@@ -102,24 +112,26 @@ const App = () => {
         }
       });
 
-      // 3. 정원 설정 병합 (값이 있는 쪽 우선)
+      // 3. 정원 설정 병합 (두 기기 중 값이 있는 쪽 우선, 충돌 시 최신 로컬 데이터 우선)
       const mergedSlots = { ...cloudSlots, ...customSlots };
 
       // 4. 합쳐진 데이터를 서버에 다시 업로드
-      await fetch(CLOUD_STORAGE_URL, {
+      const updateRes = await fetch(CLOUD_STORAGE_URL, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ apps: mergedApps, slots: mergedSlots, lastSynced: Date.now() })
       });
 
+      if (!updateRes.ok) throw new Error("Update failed");
+
       // 5. 로컬 상태 업데이트
       setApps(mergedApps);
       setCustomSlots(mergedSlots);
       
-      alert('동기화 완료! PC와 모바일 데이터가 성공적으로 합쳐졌습니다.');
+      alert('동기화 성공! 다른 기기의 데이터와 현재 기기의 데이터를 하나로 합쳤습니다.');
     } catch (e) {
       console.error(e);
-      alert('동기화 실패: 네트워크 연결을 확인해 주세요.');
+      alert('동기화 실패: 서버 연결이 원활하지 않습니다. 잠시 후 다시 시도해 주세요.');
     } finally {
       setIsSyncing(false);
     }
