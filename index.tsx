@@ -17,9 +17,6 @@ interface Application {
 const DEFAULT_SLOTS = 30;
 const INDUSTRIES: Industry[] = ['건설업', '제조업', '서비스업', '공공기관'];
 
-// 기본 클라우드 ID (문제가 생기면 관리자 페이지에서 변경 가능)
-const DEFAULT_CLOUD_ID = '0689b14f86d8a7051f68';
-
 // --- 유틸리티 ---
 const formatDate = (date: Date): string => {
   const y = date.getFullYear();
@@ -40,7 +37,7 @@ const App = () => {
   const [selectedIndustry, setSelectedIndustry] = useState<Industry | null>(null);
   const [apps, setApps] = useState<Application[]>([]);
   const [customSlots, setCustomSlots] = useState<Record<string, number>>({}); 
-  const [cloudId, setCloudId] = useState(DEFAULT_CLOUD_ID);
+  const [cloudId, setCloudId] = useState<string>('');
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   const [adminPassword, setAdminPassword] = useState('');
   const [isAdminAuthenticated, setIsAdminAuthenticated] = useState(false);
@@ -58,9 +55,9 @@ const App = () => {
   // 로컬 스토리지 로드
   useEffect(() => {
     try {
-      const savedApps = localStorage.getItem('app_bookings');
-      const savedSlots = localStorage.getItem('app_custom_slots_v3'); 
-      const savedCloudId = localStorage.getItem('app_cloud_id');
+      const savedApps = localStorage.getItem('app_bookings_v4');
+      const savedSlots = localStorage.getItem('app_custom_slots_v4'); 
+      const savedCloudId = localStorage.getItem('app_cloud_id_v4');
       if (savedApps) setApps(JSON.parse(savedApps));
       if (savedSlots) setCustomSlots(JSON.parse(savedSlots));
       if (savedCloudId) setCloudId(savedCloudId);
@@ -71,9 +68,9 @@ const App = () => {
 
   // 로컬 스토리지 저장
   useEffect(() => {
-    localStorage.setItem('app_bookings', JSON.stringify(apps));
-    localStorage.setItem('app_custom_slots_v3', JSON.stringify(customSlots));
-    localStorage.setItem('app_cloud_id', cloudId);
+    localStorage.setItem('app_bookings_v4', JSON.stringify(apps));
+    localStorage.setItem('app_custom_slots_v4', JSON.stringify(customSlots));
+    localStorage.setItem('app_cloud_id_v4', cloudId);
   }, [apps, customSlots, cloudId]);
 
   // 잔여석 계산
@@ -89,8 +86,35 @@ const App = () => {
     return customSlots[key] ?? DEFAULT_SLOTS;
   };
 
-  // --- 원터치 클라우드 동기화 (강력한 예외 처리 포함) ---
+  // --- 클라우드 저장소 생성 (ID 발급) ---
+  const handleCreateCloud = async () => {
+    setIsSyncing(true);
+    try {
+      const res = await fetch('https://api.npoint.io/documents', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ apps: [], slots: {}, lastSynced: Date.now() })
+      });
+      const data = await res.json();
+      if (data.id) {
+        setCloudId(data.id);
+        alert(`새 클라우드 저장소가 생성되었습니다!\nID: ${data.id}\n이 ID를 다른 기기(모바일 등)의 설정에 입력하면 서로 연동됩니다.`);
+      }
+    } catch (e) {
+      alert('저장소 생성에 실패했습니다. 네트워크를 확인해주세요.');
+    } finally {
+      setIsSyncing(false);
+    }
+  };
+
+  // --- 원터치 클라우드 동기화 (병합) ---
   const handleGlobalSync = async () => {
+    if (!cloudId) {
+      alert('클라우드 ID가 설정되지 않았습니다. 관리자 설정에서 새 저장소를 생성하거나 기존 ID를 입력해주세요.');
+      setAdminMode('settings');
+      return;
+    }
+
     setIsSyncing(true);
     const syncUrl = `https://api.npoint.io/${cloudId}`;
     
@@ -98,52 +122,51 @@ const App = () => {
       let cloudApps: Application[] = [];
       let cloudSlots: Record<string, number> = {};
 
-      // 1. 서버 데이터 시도 (404나 SyntaxError 방어)
-      try {
-        const res = await fetch(syncUrl);
-        if (res.ok) {
-          const text = await res.text();
-          // 데이터가 있고 올바른 JSON 형태일 때만 파싱
-          if (text && text.trim().startsWith('{')) {
-            const cloudData = JSON.parse(text);
-            cloudApps = cloudData.apps || [];
-            cloudSlots = cloudData.slots || {};
-          }
-        } else {
-          console.warn("Cloud storage not initialized or 404. Will create new entry.");
+      // 1. 서버 데이터 읽기 시도
+      const res = await fetch(syncUrl);
+      if (res.ok) {
+        const text = await res.text();
+        // 유효한 JSON인지 검사 (SyntaxError 방지)
+        if (text && text.trim().startsWith('{')) {
+          const cloudData = JSON.parse(text);
+          cloudApps = cloudData.apps || [];
+          cloudSlots = cloudData.slots || {};
         }
-      } catch (fetchErr) {
-        console.warn("Failed to fetch cloud data, assuming fresh start.", fetchErr);
+      } else if (res.status === 404) {
+        alert('입력된 클라우드 ID를 찾을 수 없습니다. ID를 확인하시거나 새로 생성해주세요.');
+        setIsSyncing(false);
+        return;
       }
 
-      // 2. 스마트 병합 (ID 기반 중복 제거)
+      // 2. 스마트 병합 (현재 기기 데이터 + 서버 데이터)
       const mergedApps = [...apps];
       cloudApps.forEach((cApp) => {
+        // ID가 겹치지 않는 것만 추가 (중복 방지)
         if (!mergedApps.find(a => a.id === cApp.id)) {
           mergedApps.push(cApp);
         }
       });
 
-      // 3. 정원 설정 병합
+      // 3. 정원 설정 병합 (두 기기 중 설정값이 있는 곳 우선)
       const mergedSlots = { ...cloudSlots, ...customSlots };
 
-      // 4. 합쳐진 데이터를 서버에 다시 업로드
+      // 4. 합쳐진 데이터를 서버에 다시 업로드 (업데이트)
       const updateRes = await fetch(syncUrl, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ apps: mergedApps, slots: mergedSlots, lastSynced: Date.now() })
       });
 
-      if (!updateRes.ok) throw new Error("Cloud update failed");
+      if (!updateRes.ok) throw new Error("Sync failed during upload");
 
       // 5. 로컬 상태 업데이트
       setApps(mergedApps);
       setCustomSlots(mergedSlots);
       
-      alert('동기화 성공! 기기 간의 데이터가 하나로 합쳐졌습니다.');
+      alert('동기화 완료! 모든 기기의 데이터가 성공적으로 합쳐졌습니다.');
     } catch (e) {
       console.error(e);
-      alert('동기화 실패: 인터넷 연결을 확인하거나 관리자 설정에서 클라우드 ID를 확인하세요.');
+      alert('동기화 중 오류가 발생했습니다. 클라우드 ID가 정확한지 확인해주세요.');
     } finally {
       setIsSyncing(false);
     }
@@ -154,7 +177,7 @@ const App = () => {
     if (!selectedDate || !selectedIndustry) return;
     const formData = new FormData(e.currentTarget);
     const newApp: Application = {
-      id: Math.random().toString(36).substr(2, 9),
+      id: Math.random().toString(36).substr(2, 11), // 더 긴 ID로 중복 방지
       date: selectedDate,
       industry: selectedIndustry,
       company: formData.get('company') as string,
@@ -241,7 +264,7 @@ const App = () => {
         <h2 className="text-2xl font-black mb-8 text-gray-900">관리자 모드</h2>
         <form onSubmit={(e) => { e.preventDefault(); if (adminPassword === '1234') setIsAdminAuthenticated(true); else alert('비밀번호가 일치하지 않습니다.'); }} className="space-y-4">
           <input type="password" value={adminPassword} onChange={(e) => setAdminPassword(e.target.value)} className="w-full px-4 py-4 bg-gray-50 border-2 border-gray-50 rounded-2xl text-center text-xl tracking-[0.5em] outline-none focus:border-blue-500 transition-all" placeholder="비번: 1234" autoFocus />
-          <button type="submit" className="w-full py-4 bg-gray-900 text-white font-black rounded-2xl shadow-lg hover:bg-black transition-all">로그인</button>
+          <button type="submit" className="w-full py-4 bg-gray-900 text-white font-black rounded-2xl shadow-lg hover:bg-black transition-all">접속하기</button>
           <button type="button" onClick={() => setView('home')} className="text-sm text-gray-400 font-bold hover:text-gray-600 pt-2">홈으로 돌아가기</button>
         </form>
       </div>
@@ -252,15 +275,29 @@ const App = () => {
     if (adminMode === 'settings') return (
       <div className="w-full max-w-md p-6 fade-in mx-auto mt-10">
         <div className="bg-white rounded-[2.5rem] shadow-2xl p-10">
-          <button onClick={() => setAdminMode('list')} className="mb-6 text-gray-400 font-bold flex items-center gap-2">← 뒤로가기</button>
-          <h2 className="text-2xl font-black mb-8">클라우드 설정</h2>
-          <div className="space-y-6">
-            <div className="space-y-2">
-              <label className="text-xs font-black text-gray-400 uppercase tracking-widest ml-1">npoint Cloud ID</label>
-              <input value={cloudId} onChange={e => setCloudId(e.target.value)} className="w-full px-5 py-4 bg-gray-50 border-2 border-gray-100 rounded-2xl font-bold focus:border-blue-500 outline-none" placeholder="ID를 입력하세요" />
+          <button onClick={() => setAdminMode('list')} className="mb-6 text-gray-400 font-bold flex items-center gap-2">← 관리 목록</button>
+          <h2 className="text-2xl font-black mb-2">클라우드 설정</h2>
+          <p className="text-xs text-gray-400 mb-8 font-medium">기기 간 데이터를 하나로 합치는 설정을 관리합니다.</p>
+          
+          <div className="space-y-8">
+            <div className="p-6 bg-blue-50 rounded-3xl border-2 border-blue-100">
+               <h4 className="text-sm font-black text-blue-600 mb-4 uppercase tracking-widest">저장소 ID 관리</h4>
+               <input value={cloudId} onChange={e => setCloudId(e.target.value)} className="w-full px-5 py-4 bg-white border-2 border-transparent rounded-2xl font-black text-center focus:border-blue-500 outline-none mb-4" placeholder="ID를 입력하거나 생성하세요" />
+               <button onClick={handleCreateCloud} className="w-full py-3 bg-white text-blue-600 border-2 border-blue-200 rounded-2xl font-black text-sm hover:bg-blue-100 transition-all">
+                  {cloudId ? '저장소 새로 생성하기' : '첫 클라우드 저장소 생성'}
+               </button>
             </div>
-            <p className="text-xs text-gray-400 leading-relaxed">※ PC와 모바일의 ID가 동일해야 서로 데이터가 합쳐집니다. 현재 경로에 오류가 나면 새로운 ID를 npoint.io에서 발급받아 교체하세요.</p>
-            <button onClick={() => { alert('설정이 저장되었습니다.'); setAdminMode('list'); }} className="w-full py-4 bg-blue-600 text-white font-black rounded-2xl shadow-lg">저장하기</button>
+            
+            <div className="space-y-4">
+              <h4 className="text-sm font-black text-gray-400 uppercase tracking-widest ml-1">도움말</h4>
+              <ul className="text-[11px] text-gray-400 space-y-2 leading-relaxed font-medium">
+                <li>• PC에서 [생성] 후 발급된 ID를 모바일에도 똑같이 입력하세요.</li>
+                <li>• ID가 같으면 언제 어디서든 [동기화] 버튼 하나로 명단이 합쳐집니다.</li>
+                <li>• 동기화 시 중복된 내역은 자동으로 제거됩니다.</li>
+              </ul>
+            </div>
+            
+            <button onClick={() => { alert('설정이 저장되었습니다.'); setAdminMode('list'); }} className="w-full py-5 bg-gray-900 text-white font-black rounded-3xl shadow-xl">설정 완료</button>
           </div>
         </div>
       </div>
@@ -271,12 +308,17 @@ const App = () => {
         <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center mb-10 gap-6">
           <div>
             <h2 className="text-3xl font-black text-gray-900">신청 관리 센터</h2>
-            <p className="text-sm text-gray-500 font-bold">기기 데이터 {apps.length}건 / 클라우드 ID: {cloudId}</p>
+            <div className="flex items-center gap-2 mt-1">
+               <span className={`w-2 h-2 rounded-full ${cloudId ? 'bg-green-500' : 'bg-red-400'}`}></span>
+               <p className="text-sm text-gray-500 font-bold">
+                 {cloudId ? `클라우드 연결됨 (${cloudId})` : '클라우드 미설정'}
+               </p>
+            </div>
           </div>
           <div className="flex flex-wrap gap-3 w-full sm:w-auto">
             <button onClick={handleGlobalSync} className="flex-1 sm:flex-none px-6 py-3 bg-purple-600 text-white rounded-2xl font-black shadow-lg hover:bg-purple-700 transition-all flex items-center justify-center gap-2">
               <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
-              데이터 동기화
+              원터치 동기화
             </button>
             <button onClick={() => setAdminMode('slots')} className="flex-1 sm:flex-none px-6 py-3 bg-blue-600 text-white rounded-2xl font-black shadow-lg">정원 설정</button>
             <button onClick={() => setAdminMode('settings')} className="flex-1 sm:flex-none px-6 py-3 bg-gray-200 text-gray-700 rounded-2xl font-black">클라우드 설정</button>
@@ -320,10 +362,12 @@ const App = () => {
 
   return (
     <div className="min-h-screen bg-[#f8fafc] w-full flex flex-col items-center font-sans overflow-x-hidden">
+      {/* 동기화 중 오버레이 */}
       {isSyncing && (
         <div className="fixed inset-0 bg-white/80 backdrop-blur-md z-[999] flex flex-col items-center justify-center fade-in">
           <div className="w-16 h-16 border-4 border-purple-600 border-t-transparent rounded-full animate-spin mb-6"></div>
-          <h3 className="text-xl font-black text-purple-700">데이터 동기화 중...</h3>
+          <h3 className="text-xl font-black text-purple-700">클라우드와 연결 중...</h3>
+          <p className="text-sm text-gray-400 mt-2 font-bold">데이터를 안전하게 합치고 있습니다.</p>
         </div>
       )}
 
@@ -333,8 +377,8 @@ const App = () => {
             <svg className="w-8 h-8" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"></path></svg>
           </button>
           <div className="text-center mb-16 px-4">
-            <h1 className="text-4xl sm:text-5xl font-black text-gray-900 mb-4 tracking-tight">안전교육 통합 신청</h1>
-            <p className="text-gray-400 font-bold text-lg">PC와 모바일 어디서나 실시간으로 연동됩니다.</p>
+            <h1 className="text-4xl sm:text-5xl font-black text-gray-900 mb-4 tracking-tight">안전교육 신청 시스템</h1>
+            <p className="text-gray-400 font-bold text-lg">기기 간 실시간 동기화를 지원합니다.</p>
           </div>
           <div className="grid grid-cols-2 md:grid-cols-4 gap-6 w-full max-w-5xl mb-20 px-4">
             {INDUSTRIES.map(industry => (
@@ -348,7 +392,7 @@ const App = () => {
             ))}
           </div>
           <button onClick={() => { setView('search'); setSearchResults(null); }} className="w-full max-w-md py-5 bg-white border-2 border-gray-100 text-gray-500 font-black rounded-3xl hover:bg-gray-50 shadow-md">
-            신청 내역 조회
+            내 신청 내역 조회하기
           </button>
         </div>
       )}
@@ -357,14 +401,14 @@ const App = () => {
         <div className="flex flex-col items-center w-full px-4 sm:px-6 py-12">
           {!selectedDate ? renderCalendar('apply') : (
             <div className="w-full max-w-md bg-white rounded-[2.5rem] shadow-2xl p-8 sm:p-10 fade-in">
-              <button onClick={() => setSelectedDate(null)} className="mb-6 text-gray-400 font-bold flex items-center gap-2 hover:text-gray-800">← 뒤로가기</button>
+              <button onClick={() => setSelectedDate(null)} className="mb-6 text-gray-400 font-bold flex items-center gap-2 hover:text-gray-800">← 날짜 다시 선택</button>
               <h3 className="text-3xl font-black mb-1 text-gray-900">{selectedDate}</h3>
               <p className="text-sm text-blue-600 font-black mb-10 tracking-widest uppercase">{selectedIndustry} (잔여: {getRemainingSlots(selectedDate, selectedIndustry!)}석)</p>
               <form onSubmit={handleApply} className="space-y-6">
                 <input required name="company" className="w-full px-5 py-5 bg-gray-50 border-2 border-transparent rounded-[1.25rem] focus:bg-white focus:border-blue-500 outline-none transition-all font-bold" placeholder="회사명" />
                 <input required name="applicant" className="w-full px-5 py-5 bg-gray-50 border-2 border-transparent rounded-[1.25rem] focus:bg-white focus:border-blue-500 outline-none transition-all font-bold" placeholder="신청자 성함" />
                 <input required name="phone" className="w-full px-5 py-5 bg-gray-50 border-2 border-transparent rounded-[1.25rem] focus:bg-white focus:border-blue-500 outline-none transition-all font-bold" placeholder="연락처" />
-                <button type="submit" className="w-full py-5 bg-blue-600 text-white font-black rounded-3xl shadow-xl hover:bg-blue-700 transition-all text-lg">신청 완료</button>
+                <button type="submit" className="w-full py-5 bg-blue-600 text-white font-black rounded-3xl shadow-xl hover:bg-blue-700 transition-all text-lg">신청 등록</button>
               </form>
             </div>
           )}
@@ -373,6 +417,7 @@ const App = () => {
 
       {view === 'admin' && renderAdmin()}
 
+      {/* 수정 모달 */}
       {editingApp && (
         <div className="fixed inset-0 bg-black/60 backdrop-blur-md flex items-center justify-center z-50 p-6">
           <div className="bg-white w-full max-w-md rounded-[2.5rem] p-10 shadow-2xl">
@@ -400,7 +445,7 @@ const App = () => {
          <div className="flex flex-col items-center justify-center min-h-screen p-4 sm:p-6 w-full fade-in">
             <div className="w-full max-w-md bg-white rounded-[2.5rem] shadow-2xl p-10">
                <button onClick={() => setView('home')} className="mb-8 text-gray-400 font-bold flex items-center gap-2 hover:text-gray-900">← 홈으로</button>
-               <h2 className="text-3xl font-black mb-10 text-gray-900">내역 조회</h2>
+               <h2 className="text-3xl font-black mb-10 text-gray-900">신청 내역 조회</h2>
                <div className="space-y-5">
                   <input value={searchName} onChange={e => setSearchName(e.target.value)} className="w-full px-6 py-5 bg-gray-50 border-2 border-gray-50 rounded-3xl outline-none focus:border-blue-500 font-bold" placeholder="신청자 이름" />
                   <input value={searchPhone} onChange={e => setSearchPhone(e.target.value)} className="w-full px-6 py-5 bg-gray-50 border-2 border-gray-50 rounded-3xl outline-none focus:border-blue-500 font-bold" placeholder="연락처 (뒤 4자리도 가능)" />
